@@ -1,5 +1,5 @@
 ## Interface: 11507
-## Title: Engraver
+## Title: Engraver_Shoulders
 ## Notes: One-click rune engraving for Season of Discovery.
 ## Author: Nastiku
 ## Version: @project-version@

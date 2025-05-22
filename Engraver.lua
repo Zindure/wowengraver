@@ -1,26 +1,33 @@
 local addonName, Addon = ...
 
 function Addon:TryEngrave(equipmentSlot, skillLineAbilityID)
-	if equipmentSlot and skillLineAbilityID then
-		local equippedRune = C_Engraving.GetRuneForEquipmentSlot(equipmentSlot)
-		if (not equippedRune or equippedRune.skillLineAbilityID ~= skillLineAbilityID) then
-			local itemId, _ = GetInventoryItemID("player", equipmentSlot)
-			if itemId then
-				ClearCursor()
-				C_Engraving.CastRune(skillLineAbilityID);
-				UseInventoryItem(equipmentSlot);
-				if StaticPopup1.which == "REPLACE_ENCHANT" then
-					ReplaceEnchant()
-					StaticPopup_Hide("REPLACE_ENCHANT")
-				end
-				ClearCursor()
-				return true
-			else
-				UIErrorsFrame:AddExternalErrorMessage("Cannot engrave rune, no item found for slot: "..equipmentSlot)
-			end
-		end
-	end
-	return false
+    -- Shoulder enchant special case: let secure button handle it
+    if equipmentSlot == Addon.SHOULDER_ENCHANT_CATEGORY then
+        -- Do nothing here! The button's secure attributes will handle the item use.
+        return false
+    end
+
+    -- Default rune logic
+    if equipmentSlot and skillLineAbilityID then
+        local equippedRune = C_Engraving.GetRuneForEquipmentSlot(equipmentSlot)
+        if (not equippedRune or equippedRune.skillLineAbilityID ~= skillLineAbilityID) then
+            local itemId, _ = GetInventoryItemID("player", equipmentSlot)
+            if itemId then
+                ClearCursor()
+                C_Engraving.CastRune(skillLineAbilityID);
+                UseInventoryItem(equipmentSlot);
+                if StaticPopup1.which == "REPLACE_ENCHANT" then
+                    ReplaceEnchant()
+                    StaticPopup_Hide("REPLACE_ENCHANT")
+                end
+                ClearCursor()
+                return true
+            else
+                UIErrorsFrame:AddExternalErrorMessage("Cannot engrave rune, no item found for slot: "..equipmentSlot)
+            end
+        end
+    end
+    return false
 end
 
 local EngraverLayoutDirections = {
@@ -198,6 +205,16 @@ Addon.CategoryToSlotId = {
 	{16},
 	{15}
 }
+
+-- Example list of shoulder enchants (replace with real data)
+Addon.ShoulderEnchants = {
+    { itemID = 236440, name = "Soul of the Butcher", icon = 134943 },
+    { itemID = 236446, name = "Soul of the Efficient", icon = 134944 },
+	{ itemID = 236447, name = "Soul of the Knife Juggler", icon = 134944 },
+    -- Add more as needed
+}
+
+Addon.SHOULDER_ENCHANT_CATEGORY = 3 -- Arbitrary high number to avoid collision
 	
 function EngraverFrameMixin:LoadCategories()
 	self:ResetCategories()
@@ -221,6 +238,16 @@ function EngraverFrameMixin:LoadCategories()
 			end
 		end
 	end
+
+	-- Add shoulder enchants as a special category
+	-- After creating the shoulder enchant category frame
+	table.insert(self.slots, 2, Addon.SHOULDER_ENCHANT_CATEGORY)
+	local categoryFrame = self.categoryFramePool:Acquire()
+	categoryFrame:Show()
+	self.equipmentSlotFrameMap[Addon.SHOULDER_ENCHANT_CATEGORY] = categoryFrame
+	categoryFrame:SetCategory(Addon.SHOULDER_ENCHANT_CATEGORY, Addon.ShoulderEnchants, {}, 3)
+	categoryFrame:SetDisplayMode(Addon.GetCurrentDisplayMode().mixin)
+
 	self:UpdateLayout()
 end
 
@@ -423,8 +450,9 @@ end
 EngraverCategoryFrameBaseMixin = {};
 
 function EngraverCategoryFrameBaseMixin:OnLoad()
-	self.runeButtonPool = CreateFramePool("Button", self, "EngraverRuneButtonTemplate")
-	self.runeButtons = {}
+    self.runeButtonPool = CreateFramePool("Button", self, "EngraverRuneButtonTemplate")
+    self.shoulderButtonPool = CreateFramePool("Button", self, "EngraverShoulderButtonTemplate")
+    self.runeButtons = {}
 end
 
 function EngraverCategoryFrameBaseMixin:SetCategory(category, runes, knownRunes, slot)
@@ -436,15 +464,52 @@ function EngraverCategoryFrameBaseMixin:SetCategory(category, runes, knownRunes,
 end
 
 function EngraverCategoryFrameBaseMixin:SetRunes(runes, knownRunes)
-	self.runeButtonPool:ReleaseAll()
-	self.runeButtons = {}
-	for r, rune in ipairs(runes) do
-		local runeButton = self.runeButtonPool:Acquire()
-		self.runeButtons[r] = runeButton
-		local isKnown = self:IsRuneKnown(rune, knownRunes)
-		runeButton:SetRune(rune, self.category, isKnown, self.slotId)
-	end
+    self.runeButtonPool:ReleaseAll()
+    self.shoulderButtonPool:ReleaseAll()
+    self.runeButtons = {}
+    for r, rune in ipairs(runes) do
+        local runeButton
+        if self.category == Addon.SHOULDER_ENCHANT_CATEGORY then
+            runeButton = self.shoulderButtonPool:Acquire()
+        else
+            runeButton = self.runeButtonPool:Acquire()
+        end
+        self.runeButtons[r] = runeButton
+
+		if self.category == Addon.SHOULDER_ENCHANT_CATEGORY then
+            -- Fetch item info for icon and name
+            local itemName, _, _, _, _, _, _, _, _, itemIcon = GetItemInfo(rune.itemID)
+            local icon = itemIcon or rune.icon
+            local name = itemName or rune.name
+            local count = GetItemCount(rune.itemID)
+            -- Set up a fake "rune" table for the button
+            runeButton:SetRune({
+                iconTexture = icon,
+                name = name,
+                skillLineAbilityID = rune.itemID,
+            }, self.category, count > 0, self.slotId)
+			local itemName = GetItemInfo(rune.itemID)
+			if not itemName then
+				-- Item info not loaded yet, queue a retry or set a default/fallback
+				itemName = rune.name or "" -- fallback to static name if you have it
+			end
+            runeButton:SetAttribute("type", "macro")
+			runeButton:SetAttribute("macrotext", "/use " .. name .. "\n/use 3\n/click StaticPopup1Button1")
+		else
+			local isKnown = self:IsRuneKnown(rune, knownRunes)
+			runeButton:SetRune(rune, self.category, isKnown, self.slotId)
+		end
+    end
 end
+
+--[[ local b = CreateFrame("Button", "EngraverShoulderButtonTemplate", UIParent, "SecureActionButtonTemplate")
+b:SetAttribute("type", "macro")
+b:SetAttribute("macrotext", "/use Soul of the Butcher\n/use 3\n/click StaticPopup1Button1")
+b:SetPoint("CENTER")
+b:SetSize(40,40)
+b:RegisterForClicks("AnyUp", "AnyDown")
+b:Show()
+b:SetNormalTexture(134943) ]]
 
 do
 	-- TODO figure out how to get slotName from slotId using API or maybe a constant somewhere
@@ -701,7 +766,11 @@ end
 EngraverSlotLabelMixin = {}
 
 function EngraverSlotLabelMixin:SetCategory(category)
-	self.slotName:SetText(GetItemInventorySlotInfo(category))
+    if category == Addon.SHOULDER_ENCHANT_CATEGORY then
+        self.slotName:SetText(GetItemInventorySlotInfo(Addon.SHOULDER_ENCHANT_CATEGORY))
+    else
+        self.slotName:SetText(GetItemInventorySlotInfo(category))
+    end
 end
 
 function EngraverSlotLabelMixin:UpdateLayout(layoutDirection)
@@ -788,16 +857,21 @@ function EngraverRuneButtonMixin:ResetColors()
 end
 
 function EngraverRuneButtonMixin:OnClick()
-	local buttonClicked = GetMouseButtonClicked();
-	if IsKeyDown(buttonClicked) then
-		if buttonClicked == "LeftButton"  then
-			Addon:TryEngrave(self.slotId, self.skillLineAbilityID)
-		elseif buttonClicked  == "RightButton" and Addon:GetOptions().EnableRightClickDrag then
-			EngraverFrame:StartMoving()
-		end
-	else
-		EngraverFrame:StopMovingOrSizing()
-	end
+    if self.category ~= Addon.SHOULDER_ENCHANT_CATEGORY then
+		print(self.category)
+		print(self.name)
+        local buttonClicked = GetMouseButtonClicked();
+        if IsKeyDown(buttonClicked) then
+            if buttonClicked == "LeftButton"  then
+                Addon:TryEngrave(self.slotId, self.skillLineAbilityID)
+            elseif buttonClicked  == "RightButton" and Addon:GetOptions().EnableRightClickDrag then
+                EngraverFrame:StartMoving()
+            end
+        else
+            EngraverFrame:StopMovingOrSizing()
+        end
+    end
+    -- For shoulder enchants, do nothing in Lua: let the secure macro fire!
 end
 
 function EngraverRuneButtonMixin:SetHighlighted(isHighlighted)
@@ -821,13 +895,17 @@ function EngraverRuneButtonMixin:SetBlinking(isBlinking, r, g, b)
 end
 
 function EngraverRuneButtonMixin:OnEnter()
-	if self.skillLineAbilityID and Addon:GetOptions().HideTooltip ~= true then
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
-		GameTooltip:SetEngravingRune(self.skillLineAbilityID);
-		self.showingTooltip = true;
-		GameTooltip:Show();
-	end
-	self:TriggerEvent("PostOnEnter")
+    if self.skillLineAbilityID and Addon:GetOptions().HideTooltip ~= true then
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
+        if self.category == Addon.SHOULDER_ENCHANT_CATEGORY then
+            GameTooltip:SetItemByID(self.skillLineAbilityID)
+        else
+            GameTooltip:SetEngravingRune(self.skillLineAbilityID)
+        end
+        self.showingTooltip = true;
+        GameTooltip:Show();
+    end
+    self:TriggerEvent("PostOnEnter")
 end
 
 function EngraverRuneButtonMixin:OnLeave()

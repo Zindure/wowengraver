@@ -27,6 +27,17 @@
 			<Layer level="BORDER"/>
 		</Layers>
 	</CheckButton>
+	<Button name="EngraverShoulderButtonTemplate" inherits="SecureActionButtonTemplate,ActionButtonTemplate" virtual="true" mixin="EngraverRuneButtonMixin">
+		<Size>
+			<AbsDimension x="40" y="40"/>
+		</Size>
+		<Scripts>
+			<OnEnter method="OnEnter"/>
+			<OnLeave method="OnLeave"/>
+			<OnLoad method="OnLoad"/>
+			<OnEvent method="OnEvent"/>
+		</Scripts>
+	</Button>
 	<Frame name="EngraverCategoryFrameTemplate" virtual="true" mixin="EngraverCategoryFrameBaseMixin">
 		<Size>
 			<AbsDimension x="40" y="40" />
