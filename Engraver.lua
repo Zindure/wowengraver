@@ -30,6 +30,20 @@ function Addon:TryEngrave(equipmentSlot, skillLineAbilityID)
     return false
 end
 
+-- Returns true if the item is found in any bag (Dragonflight+ API)
+local function PlayerHasItem(itemID)
+    for bag = 0, NUM_BAG_SLOTS do
+        local numSlots = C_Container.GetContainerNumSlots(bag)
+        for slot = 1, numSlots do
+            local id = C_Container.GetContainerItemID(bag, slot)
+            if id == itemID then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 local EngraverLayoutDirections = {
 	{ 
 		text 					= "Left to Right",
@@ -108,18 +122,20 @@ Addon.GetCurrentLayoutDirection = function() return EngraverLayoutDirections[Add
 EngraverFrameMixin = {};
 
 function EngraverFrameMixin:OnLoad()
-	if C_Engraving:IsEngravingEnabled() then
-		self:LoadCategoryPool()
-		self:RegisterEvent("PLAYER_ENTERING_WORLD");
-		self:RegisterEvent("RUNE_UPDATED");
-		self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED");
-		self:RegisterEvent("UPDATE_INVENTORY_ALERTS");
-		self:RegisterEvent("NEW_RECIPE_LEARNED");
-		self:RegisterEvent("PLAYER_REGEN_ENABLED");
-		self:RegisterForDrag("RightButton")
-	else
-		EngraverFrame:SetShown(false) 
-	end
+    if C_Engraving:IsEngravingEnabled() then
+        self:LoadCategoryPool()
+        self:RegisterEvent("PLAYER_ENTERING_WORLD")
+        self:RegisterEvent("RUNE_UPDATED")
+        self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+        self:RegisterEvent("UPDATE_INVENTORY_ALERTS")
+        self:RegisterEvent("NEW_RECIPE_LEARNED")
+        self:RegisterEvent("PLAYER_REGEN_ENABLED")
+        self:RegisterEvent("BAG_UPDATE")
+        self:RegisterEvent("SPELLS_CHANGED")
+        self:RegisterForDrag("RightButton")
+    else
+        EngraverFrame:SetShown(false) 
+    end
 end
 
 local function HookMouseOver_UpdateVisibilityModeAlpha(mouseOverFrame, engraverFrame)
@@ -141,20 +157,21 @@ function EngraverFrameMixin:LoadCategoryPool()
 end
 
 function EngraverFrameMixin:OnEvent(event, ...)
-	if (event == "PLAYER_ENTERING_WORLD") then
-		self:Initialize()
-	elseif (event == "RUNE_UPDATED") then
-		self:UpdateLayout()
-	elseif (event == "NEW_RECIPE_LEARNED") then
-		self:LoadCategories()
-	elseif (event == "PLAYER_EQUIPMENT_CHANGED") then
-		self:UpdateLayout()
-	elseif (event == "UPDATE_INVENTORY_ALERTS") then
-		self:UpdateLayout()
-	elseif (event == "PLAYER_REGEN_ENABLED") then
-		-- Update after leaving combat lockdown in case settings changed during combat
-		self:UpdateLayout()
-	end
+    if (event == "PLAYER_ENTERING_WORLD") then
+        self:Initialize()
+    elseif (event == "RUNE_UPDATED") then
+        self:UpdateLayout()
+    elseif (event == "NEW_RECIPE_LEARNED") then
+        self:LoadCategories()
+    elseif (event == "PLAYER_EQUIPMENT_CHANGED") then
+        self:UpdateLayout()
+    elseif (event == "UPDATE_INVENTORY_ALERTS") then
+        self:UpdateLayout()
+    elseif (event == "PLAYER_REGEN_ENABLED") then
+        self:UpdateLayout()
+    elseif (event == "BAG_UPDATE" or event == "SPELLS_CHANGED") then
+        self:LoadCategories()
+    end
 end
 
 function EngraverFrameMixin:Initialize()
@@ -206,13 +223,11 @@ Addon.CategoryToSlotId = {
 	{15}
 }
 
--- Example list of shoulder enchants (replace with real data)
-Addon.ShoulderEnchants = {
-    { itemID = 236440, name = "Soul of the Butcher", icon = 134943 },
-    { itemID = 236446, name = "Soul of the Efficient", icon = 134944 },
-	{ itemID = 236447, name = "Soul of the Knife Juggler", icon = 134944 },
-    -- Add more as needed
-}
+
+
+local _, playerClass = UnitClass("player")
+Addon.ShoulderEnchantsByClass = _G["Engraver_ShoulderEnchantsByClass"]
+Addon.ShoulderEnchants = Addon.ShoulderEnchantsByClass[playerClass] or {}
 
 Addon.SHOULDER_ENCHANT_CATEGORY = 3 -- Arbitrary high number to avoid collision
 	
@@ -245,7 +260,16 @@ function EngraverFrameMixin:LoadCategories()
 	local categoryFrame = self.categoryFramePool:Acquire()
 	categoryFrame:Show()
 	self.equipmentSlotFrameMap[Addon.SHOULDER_ENCHANT_CATEGORY] = categoryFrame
-	categoryFrame:SetCategory(Addon.SHOULDER_ENCHANT_CATEGORY, Addon.ShoulderEnchants, {}, 3)
+	-- Filter shoulder enchants to only those in the player's bags
+	local filteredShoulderEnchants = {}
+	for _, rune in ipairs(Addon.ShoulderEnchants) do
+    if PlayerHasItem(rune.itemID) then
+        table.insert(filteredShoulderEnchants, rune)
+	elseif  EngraverCategoryFrameBaseMixin:PlayerHasSpellByName(rune.name) then
+		table.insert(filteredShoulderEnchants, rune)
+    end
+end
+	categoryFrame:SetCategory(Addon.SHOULDER_ENCHANT_CATEGORY, filteredShoulderEnchants, {}, 3)
 	categoryFrame:SetDisplayMode(Addon.GetCurrentDisplayMode().mixin)
 
 	self:UpdateLayout()
@@ -464,8 +488,18 @@ function EngraverCategoryFrameBaseMixin:SetCategory(category, runes, knownRunes,
 end
 
 function EngraverCategoryFrameBaseMixin:SetRunes(runes, knownRunes)
+    -- Ensure pools are initialized
+    if not self.runeButtonPool then
+        self.runeButtonPool = CreateFramePool("Button", self, "EngraverRuneButtonTemplate")
+    end
+    if self.category == Addon.SHOULDER_ENCHANT_CATEGORY and not self.shoulderButtonPool then
+        self.shoulderButtonPool = CreateFramePool("Button", self, "EngraverShoulderButtonTemplate")
+    end
+
     self.runeButtonPool:ReleaseAll()
-    self.shoulderButtonPool:ReleaseAll()
+    if self.shoulderButtonPool then
+        self.shoulderButtonPool:ReleaseAll()
+    end
     self.runeButtons = {}
     for r, rune in ipairs(runes) do
         local runeButton
@@ -482,16 +516,15 @@ function EngraverCategoryFrameBaseMixin:SetRunes(runes, knownRunes)
             local icon = itemIcon or rune.icon
             local name = itemName or rune.name
             local count = GetItemCount(rune.itemID)
-            -- Set up a fake "rune" table for the button
             runeButton:SetRune({
                 iconTexture = icon,
                 name = name,
                 skillLineAbilityID = rune.itemID,
+                spellID = rune.spellID,
             }, self.category, count > 0, self.slotId)
 			local itemName = GetItemInfo(rune.itemID)
 			if not itemName then
-				-- Item info not loaded yet, queue a retry or set a default/fallback
-				itemName = rune.name or "" -- fallback to static name if you have it
+				itemName = rune.name or ""
 			end
             runeButton:SetAttribute("type", "macro")
 			runeButton:SetAttribute("macrotext", "/use " .. name .. "\n/use 3\n/click StaticPopup1Button1")
@@ -501,15 +534,6 @@ function EngraverCategoryFrameBaseMixin:SetRunes(runes, knownRunes)
 		end
     end
 end
-
---[[ local b = CreateFrame("Button", "EngraverShoulderButtonTemplate", UIParent, "SecureActionButtonTemplate")
-b:SetAttribute("type", "macro")
-b:SetAttribute("macrotext", "/use Soul of the Butcher\n/use 3\n/click StaticPopup1Button1")
-b:SetPoint("CENTER")
-b:SetSize(40,40)
-b:RegisterForClicks("AnyUp", "AnyDown")
-b:Show()
-b:SetNormalTexture(134943) ]]
 
 do
 	-- TODO figure out how to get slotName from slotId using API or maybe a constant somewhere
@@ -577,21 +601,56 @@ function EngraverCategoryFrameBaseMixin:UpdateCategoryLayout(layoutDirection)
 end
 
 function EngraverCategoryFrameBaseMixin:DetermineActiveAndInactiveButtons()
-	self.activeButton = nil
-	self.inactiveButtons = {}
-	if self.runeButtons then
-		local equippedRune = nil
-		if (self.slotId) then
-			equippedRune = C_Engraving.GetRuneForEquipmentSlot(self.slotId)
-		end
-		for r, runeButton in ipairs(self.runeButtons) do
-			if (equippedRune and equippedRune.skillLineAbilityID == runeButton.skillLineAbilityID) then
-				self.activeButton = runeButton
-			else
-				table.insert(self.inactiveButtons, runeButton)
-			end
-		end
-	end
+    self.activeButton = nil
+    self.inactiveButtons = {}
+    if self.runeButtons then
+        local equippedRune = nil
+        if self.category == Addon.SHOULDER_ENCHANT_CATEGORY then
+            -- Find the active shoulder enchant by scanning the spellbook
+            local activeSpellName
+            for _, rune in ipairs(Addon.ShoulderEnchants) do
+                if self:PlayerHasSpellByName(rune.name) then
+                    activeSpellName = rune.name
+                    break
+                end
+            end
+            local foundActive = false
+            for r, runeButton in ipairs(self.runeButtons) do
+                if runeButton.tooltipName == activeSpellName then
+                    self.activeButton = runeButton
+                    foundActive = true
+                else
+                    table.insert(self.inactiveButtons, runeButton)
+                end
+            end
+        else
+            -- For other slots, use the equipped rune info
+            if (self.slotId) then
+                equippedRune = C_Engraving.GetRuneForEquipmentSlot(self.slotId)
+            end
+            for r, runeButton in ipairs(self.runeButtons) do
+                if (equippedRune and equippedRune.skillLineAbilityID == runeButton.skillLineAbilityID) then
+                    self.activeButton = runeButton
+                else
+                    table.insert(self.inactiveButtons, runeButton)
+                end
+            end
+        end
+    end
+end
+
+function EngraverCategoryFrameBaseMixin:PlayerHasSpellByName(targetName)
+    for tab = 1, GetNumSpellTabs() do
+        local _, _, offset, numSpells = GetSpellTabInfo(tab)
+        for i = 1, numSpells do
+            local spellBookIndex = offset + i
+            local spellName = GetSpellBookItemName(spellBookIndex, BOOKTYPE_SPELL)
+            if spellName == targetName then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 function EngraverCategoryFrameBaseMixin:SetDisplayMode(displayModeMixin)
@@ -819,7 +878,7 @@ function EngraverRuneButtonMixin:SetRune(rune, category, isKnown, slot)
 	self.icon:SetTexture(rune.iconTexture);
 	self.tooltipName = rune.name;
 	self.skillLineAbilityID = rune.skillLineAbilityID;
-	self.spellID = 1
+	self.spellID = rune.spellID or 1
 	if rune.learnedAbilitySpellIDs and #rune.learnedAbilitySpellIDs > 0 then
 		self.spellID = rune.learnedAbilitySpellIDs[1]
 	end
@@ -858,8 +917,6 @@ end
 
 function EngraverRuneButtonMixin:OnClick()
     if self.category ~= Addon.SHOULDER_ENCHANT_CATEGORY then
-		print(self.category)
-		print(self.name)
         local buttonClicked = GetMouseButtonClicked();
         if IsKeyDown(buttonClicked) then
             if buttonClicked == "LeftButton"  then
